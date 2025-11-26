@@ -1,5 +1,5 @@
 import logging
-import random
+import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
@@ -9,90 +9,124 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# --- BANCO DE STANDS ---
-STANDS = [
-    "Star Platinum", "Magician's Red", "Hermit Purple", "Hierophant Green", 
-    "Silver Chariot", "The Fool", "The World", "Tower of Gray", "Dark Blue Moon", 
-    "Strength", "Ebony Devil", "Yellow Temperance", "Hanged Man", "Emperor", 
-    "Empress", "Wheel of Fortune", "Justice", "Lovers", "Sun", "Death Thirteen", 
-    "Judgement", "High Priestess", "Geb", "Khnum", "Tohth", "Anubis", "Bastet", 
-    "Sethan", "Osiris", "Horus", "Atum", "Tenore Sax", "Cream",
-    "Crazy Diamond", "The Hand", "Heaven's Door", "Killer Queen", "Aqua Necklace", 
-    "Bad Company", "Red Hot Chili Pepper", "The Lock", "Surface", "Love Deluxe", 
-    "Pearl Jam", "Achtung Baby", "Ratt", "Harvest", "Cinderella", "Atom Heart Father", 
-    "Boy II Man", "Earth Wind and Fire", "Highway Star", "Stray Cat", "Super Fly", "Enigma",
-    "Gold Experience", "Sticky Fingers", "Moody Blues", "Sex Pistols", "Aerosmith", 
-    "Purple Haze", "Spice Girl", "Chariot Requiem", "Gold Experience Requiem", 
-    "King Crimson", "Echoes", "Black Sabbath", "Soft Machine", "Kraft Work", 
-    "Little Feet", "Man in the Mirror", "Mr. President", "Beach Boy", "The Grateful Dead", 
-    "Baby Face", "White Album", "Clash", "Talking Head", "Notorious B.I.G.", 
-    "Metallica", "Green Day", "Oasis", "Rolling Stones",
-    "Stone Free", "Kiss", "Burning Down the House", "Foo Fighters", "Weather Report", 
-    "Diver Down", "Whitesnake", "C-Moon", "Made in Heaven", "Goo Goo Dolls", 
-    "Manhattan Transfer", "Highway to Hell", "Marilyn Manson", "Jumpin' Jack Flash", 
-    "Limp Bizkit", "Survivor", "Planet Waves", "Dragon's Dream", "Yo-Yo Ma", 
-    "Green, Green Grass of Home", "Jail House Lock", "Bohemian Rhapsody", 
-    "Sky High", "Under World"
-]
+# --- LÓGICA DE BINANCE (API) ---
+def get_binance_price(symbol):
+    """
+    Consulta la API pública de Binance para obtener el precio de un par.
+    Documentación: https://developers.binance.com/docs/binance-spot-api-docs/rest-api/general-api-information
+    """
+    try:
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+        response = requests.get(url, timeout=5)
+        response.raise_for_status() # Lanza error si la petición falla
+        data = response.json()
+        
+        if 'price' in data:
+            price = float(data['price'])
+            # Formateo condicional: Si es muy pequeño (como PEPE), mostramos más decimales
+            if price < 0.01:
+                return f"${price:.8f} USDT"
+            else:
+                return f"${price:,.2f} USDT"
+        else:
+            return "No disponible"
+    except Exception as e:
+        logging.error(f"Error conectando a Binance: {e}")
+        return "Error de conexión ⚠️"
 
-# --- FUNCIONES DEL BOT ---
+# --- INTERFAZ GRÁFICA (TECLADOS) ---
+
+def get_main_keyboard():
+    """Genera los botones del menú principal."""
+    keyboard = [
+        [InlineKeyboardButton("₿ Bitcoin (BTC)", callback_data='calc_BTCUSDT')],
+        [InlineKeyboardButton("Ξ Ethereum (ETH)", callback_data='calc_ETHUSDT')],
+        [InlineKeyboardButton("🐸 Pepe (PEPE)", callback_data='calc_PEPEUSDT')],
+        [InlineKeyboardButton("🔄 Actualizar Todo", callback_data='refresh_menu')]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+# --- HANDLERS (MANEJADORES) ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Inicia la interacción."""
-    keyboard = [
-        [InlineKeyboardButton("🏹 ¡Quiero un Stand!", callback_data='get_stand')],
-        [InlineKeyboardButton("No, soy una persona normal", callback_data='cancel')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        "¡Hola! Soy Star Platanos. 🍌⭐\n\n"
-        "La flecha ha aparecido ante ti. ¿Tienes la fuerza espiritual para despertar tu Stand?",
-        reply_markup=reply_markup
+    """Envía el menú inicial."""
+    welcome_text = (
+        "📊 **Star Platanos Crypto**\n\n"
+        "Bienvenido al monitor de mercado en tiempo real.\n"
+        "Los datos son obtenidos directamente de Binance.\n\n"
+        "Selecciona una moneda para ver su precio actual:"
     )
+    
+    # Si viene de un botón (callback), editamos el mensaje anterior
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            text=welcome_text,
+            reply_markup=get_main_keyboard(),
+            parse_mode='Markdown'
+        )
+    # Si es un comando nuevo /start
+    else:
+        await update.message.reply_text(
+            text=welcome_text,
+            reply_markup=get_main_keyboard(),
+            parse_mode='Markdown'
+        )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Maneja los botones."""
+    """Maneja las interacciones con los botones."""
     query = update.callback_query
-    await query.answer() 
+    await query.answer() # Feedback visual de que el botón fue presionado
+    data = query.data
 
-    if query.data == 'get_stand':
-        stand = random.choice(STANDS)
+    if data == 'refresh_menu':
+        # Simplemente recargamos el menú (útil si quisiéramos poner precios en el menú mismo)
+        await start(update, context)
+
+    elif data.startswith('calc_'):
+        # Extraemos el símbolo (ej: calc_BTCUSDT -> BTCUSDT)
+        symbol = data.split('_')[1]
         
-        # MEJORA DE UX: Botón para reintentar
-        keyboard = [[InlineKeyboardButton("🔄 Reintentar", callback_data='get_stand')]]
+        # Mapeo para mostrar nombres bonitos
+        coin_names = {
+            'BTCUSDT': 'Bitcoin',
+            'ETHUSDT': 'Ethereum',
+            'PEPEUSDT': 'Pepe Coin'
+        }
+        coin_name = coin_names.get(symbol, symbol)
+        
+        # Obtenemos el precio
+        price_text = get_binance_price(symbol)
+        
+        # Menú de detalle
+        keyboard = [
+            [InlineKeyboardButton("🔄 Actualizar Precio", callback_data=data)],
+            [InlineKeyboardButton("⬅️ Volver a la Lista", callback_data='refresh_menu')]
+        ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await query.edit_message_text(
-            text=f"✨ **¡STAND DESPERTADO!** ✨\n\n"
-                 f"Tu Stand es: **「 {stand} 」**\n\n",
-            reply_markup=reply_markup # Agregamos el botón aquí
-        )
         
-    elif query.data == 'cancel':
-        await query.edit_message_text(text="F (Usa /start si cambias de opinión)")
+        await query.edit_message_text(
+            text=f"📈 **Cotización Actual: {coin_name}**\n\n"
+                 f"💰 Precio: `{price_text}`\n\n"
+                 f"_Datos en tiempo real de Binance API_",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
 
 async def unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """MEJORA DE UX: Responde a texto que no es comando."""
-    await update.message.reply_text(
-        "No entiendo tus palabras... 🍌\n"
-        "Usa el comando /start para iniciar el ritual."
-    )
+    """Respuesta a texto no reconocido."""
+    await update.message.reply_text("⛔ Comando no reconocido.\nUsa /start para ver los precios.")
 
-# --- EJECUCIÓN PRINCIPAL ---
+# --- MAIN ---
 
 if __name__ == '__main__':
-    # RECUERDA: Reemplaza con tu TOKEN real
+    # RECUERDA: Tu Token real va aquí
     TOKEN = "8318357352:AAFft552B2hFLT1hR9lbMCVzSXnw6iQ_Y5w" 
     
     application = ApplicationBuilder().token(TOKEN).build()
     
-    # Handlers
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CallbackQueryHandler(button_handler))
-    
-    # Handler para texto desconocido (debe ir al final)
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), unknown_text))
     
-    print("Star Platanos V3 (UX Mejorada) listo...")
+    print("Star Platanos Crypto V5.0 iniciado...")
     application.run_polling()
